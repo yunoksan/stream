@@ -40,10 +40,20 @@ if not df.empty:
     st.title("📦 식자재 가격 비교 대시보드 (CSV + 이력관리)")
 
     # 검색창
-    keyword = st.text_input("🔍 상품 검색 (예: 참깨)", "")
+    keyword = st.text_input("🔍 상품 검색 (예: 참깨, 또는 '참 5k')", "")
 
     if keyword:
-        filtered = df[df["품명"].astype(str).str.contains(keyword, case=False, na=False)]
+        # 여러 단어로 나눠서 모두 포함하는 데이터 필터링 (AND 방식)
+        keywords = keyword.split()
+        filtered = df.copy()
+        for kw in keywords:
+            mask = (
+                filtered["브랜드"].astype(str).str.contains(kw, case=False, na=False)
+                | filtered["품명"].astype(str).str.contains(kw, case=False, na=False)
+                | filtered["규격"].astype(str).str.contains(kw, case=False, na=False)
+                | filtered["판매처"].astype(str).str.contains(kw, case=False, na=False)
+            )
+            filtered = filtered[mask]
 
         if filtered.empty:
             st.warning("검색된 상품이 없습니다.")
@@ -82,14 +92,13 @@ if not df.empty:
 
                 st.dataframe(sub_df_display[["판매처", "단위", "가격", "EA가격", "갱신일"]], use_container_width=True)
 
-                # === 최저가 판매처를 기본 선택 ===
-                default_index = int(sub_df[sub_df["EA가격"] == min_price].index[0])  # numpy.int64 → int 변환
-
+                # 최저가 판매처를 기본 선택
+                default_index = int(sub_df[sub_df["EA가격"] == min_price].index[0])
                 selected_index = st.selectbox(
                     "📌 판매처 선택",
-                    [int(i) for i in sub_df.index],   # numpy.int64 → int 변환
+                    [int(i) for i in sub_df.index],
                     format_func=lambda x: f"{sub_df.loc[x, '판매처']} | {int(sub_df.loc[x, '가격']):,}원 | EA:{int(sub_df.loc[x, 'EA가격']):,}원",
-                    index=[int(i) for i in sub_df.index].index(default_index)  # 올바른 위치를 기본값으로
+                    index=[int(i) for i in sub_df.index].index(default_index)
                 )
 
                 # 상세 정보
