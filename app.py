@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime
 import os
 
 # CSV 파일 경로
@@ -29,7 +28,7 @@ def convert_to_ea(row):
         return float(row["가격"])
 
 if not df.empty:
-    # EA가격 계산
+    # 숫자형 변환
     df["가격"] = pd.to_numeric(df["가격"], errors="coerce").fillna(0)
     df["이전EA가격"] = pd.to_numeric(df.get("이전EA가격", 0), errors="coerce").fillna(0)
     df["EA가격"] = df.apply(convert_to_ea, axis=1)
@@ -40,6 +39,7 @@ if not df.empty:
     # UI 시작
     st.title("📦 식자재 가격 비교 대시보드 (CSV + 이력관리)")
 
+    # 검색창
     keyword = st.text_input("🔍 상품 검색 (예: 참깨)", "")
 
     if keyword:
@@ -48,21 +48,32 @@ if not df.empty:
         if filtered.empty:
             st.warning("검색된 상품이 없습니다.")
         else:
-            unique_products = filtered["표준상품"].unique()
-            selected_product = st.selectbox("📌 브랜드 선택", unique_products)
+            # 브랜드/규격별 최저가 요약
+            product_summary = (
+                filtered.groupby("표준상품")["EA가격"].min().reset_index()
+            )
+
+            # 상품명과 최저가를 EM SPACE( )로 간격 넣어서 표시
+            product_options = {
+                row["표준상품"]: f"{row['표준상품']}  | 최저가 {int(row['EA가격']):,}원"
+                for _, row in product_summary.iterrows()
+            }
+
+            # 브랜드 선택 드롭다운
+            selected_product = st.selectbox(
+                "📌 브랜드 선택",
+                options=list(product_options.keys()),
+                format_func=lambda x: product_options[x]
+            )
 
             if selected_product:
                 sub_df = filtered[filtered["표준상품"] == selected_product].reset_index(drop=True)
-
-                # 최저가 찾기
                 min_price = sub_df["EA가격"].min()
 
                 st.subheader(f"🔍 {selected_product} 판매처별 가격")
 
-                # 복사본 생성
+                # 테이블 표시 (EA가격 최저가에 ⭐ 표시)
                 sub_df_display = sub_df.copy()
-
-                # 포맷 적용 (천단위 콤마, 원 단위)
                 sub_df_display["가격"] = sub_df_display["가격"].apply(lambda x: f"{int(x):,}원")
                 sub_df_display["EA가격"] = sub_df_display.apply(
                     lambda r: f"{int(r['EA가격']):,}원 ⭐" if r["EA가격"] == min_price else f"{int(r['EA가격']):,}원",
@@ -71,16 +82,18 @@ if not df.empty:
 
                 st.dataframe(sub_df_display[["판매처", "단위", "가격", "EA가격", "갱신일"]], use_container_width=True)
 
-                # 판매처 선택
+                # === 최저가 판매처를 기본 선택 ===
+                default_index = int(sub_df[sub_df["EA가격"] == min_price].index[0])  # numpy.int64 → int 변환
+
                 selected_index = st.selectbox(
                     "📌 판매처 선택",
-                    sub_df.index,
-                    format_func=lambda x: f"{sub_df.loc[x, '판매처']} | {int(sub_df.loc[x, '가격']):,}원 | EA:{int(sub_df.loc[x, 'EA가격']):,}원"
+                    [int(i) for i in sub_df.index],   # numpy.int64 → int 변환
+                    format_func=lambda x: f"{sub_df.loc[x, '판매처']} | {int(sub_df.loc[x, '가격']):,}원 | EA:{int(sub_df.loc[x, 'EA가격']):,}원",
+                    index=[int(i) for i in sub_df.index].index(default_index)  # 올바른 위치를 기본값으로
                 )
 
                 # 상세 정보
                 row = sub_df.loc[selected_index]
-
                 st.subheader("📋 상세 정보 (선택된 판매처)")
 
                 diff_val = float(row["EA가격"]) - float(row["이전EA가격"])
