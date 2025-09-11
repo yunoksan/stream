@@ -1,142 +1,228 @@
 import streamlit as st
 import pandas as pd
 import os
+import re
+from st_aggrid import AgGrid, GridOptionsBuilder, JsCode
 
 # CSV 파일 경로
-file_path = "products.csv"
+FILE_PATH = "products.csv"
 
-# CSV 불러오기
 @st.cache_data
 def load_data():
-    if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
-        st.error(f"❌ {file_path} 파일이 없거나 비어있습니다.")
+    if not os.path.exists(FILE_PATH) or os.path.getsize(FILE_PATH) == 0:
+        st.error(f"❌ {FILE_PATH} 파일이 없거나 비어있습니다.")
         return pd.DataFrame()
-    df = pd.read_csv(file_path)
-    return df
+    return pd.read_csv(FILE_PATH)
 
 df = load_data()
 
-# EA 환산 함수
+# EA 환산
 def convert_to_ea(row):
-    if "Box" in str(row["단위"]):
+    unit = str(row.get("단위", ""))
+    price = float(row.get("가격", 0))
+    if "Box" in unit:
+        # 예: "Box(10EA)" → 10
         try:
-            count = int(str(row["단위"]).split("(")[1].replace("EA)", ""))
+            count_str = unit.split("(")[1].split("EA")[0].replace(")", "")
+            count = int(count_str)
         except Exception:
             count = 1
-        return float(row["가격"]) / max(count, 1)
-    else:
-        return float(row["가격"])
+        return price / max(count, 1)
+    return price
 
+# 규격 정렬용 (g/kg/ml/l → g/ml 기준 1000배 환산)
+def size_to_base(size_str):
+    s = str(size_str).lower().strip()
+    m = re.match(r"(\d+)(g|kg|ml|l)", s)
+    if not m:
+        return float("inf")
+    num, unit = m.groups()
+    num = int(num)
+    if unit in ("kg", "l"):
+        num *= 1000
+    return num
+
+# ------- 데이터 전처리 -------
 if not df.empty:
-    # 숫자형 변환
     df["가격"] = pd.to_numeric(df["가격"], errors="coerce").fillna(0)
     df["이전EA가격"] = pd.to_numeric(df.get("이전EA가격", 0), errors="coerce").fillna(0)
     df["EA가격"] = df.apply(convert_to_ea, axis=1)
-
-    # 표준상품
     df["표준상품"] = df["브랜드"].astype(str) + " " + df["품명"].astype(str) + " " + df["규격"].astype(str)
 
-    # UI 시작
-    st.title("📦 식자재 가격 비교 대시보드 (CSV + 이력관리)")
+st.title("📦 식자재 가격 비교 대시보드")
 
-    # 검색창
-    keyword = st.text_input("🔍 상품 검색 (예: 참깨, 또는 '참 5k')", "")
+# ================= 좌측 패널(사이드바) =================
+with st.sidebar:
+    st.header("📂 단계별 검색 패널")
 
-    if keyword:
-        # 여러 단어로 나눠서 모두 포함하는 데이터 필터링 (AND 방식)
-        keywords = keyword.split()
-        filtered = df.copy()
-        for kw in keywords:
-            mask = (
-                filtered["브랜드"].astype(str).str.contains(kw, case=False, na=False)
-                | filtered["품명"].astype(str).str.contains(kw, case=False, na=False)
-                | filtered["규격"].astype(str).str.contains(kw, case=False, na=False)
-                | filtered["판매처"].astype(str).str.contains(kw, case=False, na=False)
-            )
-            filtered = filtered[mask]
+    # 1) 상품
+    all_products = sorted(df["품명"].dropna().unique()) if not df.empty else []
+    sel_product_key = "sel_product"  # 상품은 고정 key
+    selected_product = st.selectbox("상품명", [""] + list(all_products), key=sel_product_key)
 
-        if filtered.empty:
-            st.warning("검색된 상품이 없습니다.")
+    # 2) 브랜드 (상품 선택에 종속) → 상품이 바뀌면 key가 달라져 새 위젯 생성됨
+    if selected_product:
+        brand_options = sorted(df[df["품명"] == selected_product]["브랜드"].dropna().unique())
+    else:
+        brand_options = sorted(df["브랜드"].dropna().unique()) if not df.empty else []
+    brand_widget_key = f"sel_brand__{selected_product or 'ALL'}"
+    selected_brand = st.selectbox("브랜드", [""] + list(brand_options), key=brand_widget_key)
+
+    # 3) 규격 (상품/브랜드에 종속) → 둘 중 하나라도 바뀌면 key가 달라져 새 위젯 생성됨
+    size_options = []
+    if selected_product and selected_brand:
+        size_options = sorted(df[(df["품명"] == selected_product) & (df["브랜드"] == selected_brand)]["규격"].dropna().unique())
+    elif selected_product:
+        size_options = sorted(df[df["품명"] == selected_product]["규격"].dropna().unique())
+    elif selected_brand:
+        size_options = sorted(df[df["브랜드"] == selected_brand]["규격"].dropna().unique())
+    size_widget_key = f"sel_size__{selected_product or 'ALL'}__{selected_brand or 'ALL'}"
+    if size_options:
+        selected_size = st.selectbox("규격", [""] + list(size_options), key=size_widget_key)
+    else:
+        selected_size = ""
+
+    # 선택 검색어를 우측 키워드창으로만 “전달” (검색은 우측에서만)
+    if st.button("➡️ 선택 검색어를 키워드창으로 보내기"):
+        terms = []
+        if selected_product: terms.append(selected_product)
+        if selected_brand:   terms.append(selected_brand)
+        if selected_size:    terms.append(selected_size)
+        keyword_str = " ".join(terms)
+        if keyword_str.strip():
+            st.session_state["keyword"] = keyword_str
+            st.success(f"키워드창에 '{keyword_str}' 입력됨")
+            # 바로 반영되도록 즉시 리런 (버전별 호환)
+            try:
+                st.rerun()
+            except Exception:
+                st.experimental_rerun()
         else:
-            # 브랜드/규격별 최저가 요약
-            product_summary = (
-                filtered.groupby("표준상품")["EA가격"].min().reset_index()
-            )
+            st.warning("선택 조건이 비어있습니다.")
 
-            # 상품명과 최저가를 EM SPACE( )로 간격 넣어서 표시
-            product_options = {
-                row["표준상품"]: f"{row['표준상품']}  | 최저가 {int(row['EA가격']):,}원"
-                for _, row in product_summary.iterrows()
+# ================= 우측: 키워드 검색 & 비교 =================
+keyword = st.text_input("🔍 키워드 검색 (예: 참깨, 또는 '참 5k')",
+                        value=st.session_state.get("keyword", ""),
+                        key="keyword_input")
+
+if keyword and not df.empty:
+    # 공백 분리 AND 검색
+    kws = keyword.split()
+    filtered = df.copy()
+    for kw in kws:
+        mask = (
+            filtered["브랜드"].astype(str).str.contains(kw, case=False, na=False)
+            | filtered["품명"].astype(str).str.contains(kw, case=False, na=False)
+            | filtered["규격"].astype(str).str.contains(kw, case=False, na=False)
+            | filtered["판매처"].astype(str).str.contains(kw, case=False, na=False)
+        )
+        filtered = filtered[mask]
+else:
+    filtered = pd.DataFrame()
+
+if filtered.empty:
+    st.info("좌측에서 선택 후 키워드창으로 보내거나, 키워드를 입력하세요.")
+else:
+    # 브랜드/규격별 최저 EA 요약
+    product_summary = filtered.groupby(["규격", "표준상품"])["EA가격"].min().reset_index()
+    product_summary["규격정렬"] = product_summary["규격"].apply(size_to_base)
+    product_summary = product_summary.sort_values(by=["규격정렬", "EA가격"]).reset_index(drop=True)
+    product_summary["규격별최저"] = product_summary.groupby("규격")["EA가격"].transform("min")
+
+    # 셀렉트 옵션(규격별 최저가 ⭐)
+    options_map = {
+        row["표준상품"]: f"[{row['규격']}] {row['표준상품']} | 최저가 {int(row['EA가격']):,}원" +
+                         (" ⭐" if row["EA가격"] == row["규격별최저"] else "")
+        for _, row in product_summary.iterrows()
+    }
+
+    selected_std = st.selectbox("📌 브랜드 선택", options=list(options_map.keys()),
+                                format_func=lambda x: options_map[x], key="std_select")
+
+    if selected_std:
+        sub = filtered[filtered["표준상품"] == selected_std].copy()
+        # 판매처 내 중복 단위는 EA 최저가만 남기기
+        sub = sub.loc[sub.groupby("판매처")["EA가격"].idxmin()].reset_index(drop=True)
+        min_ea = sub["EA가격"].min()
+
+        st.subheader(f"🔍 {selected_std} 판매처별 가격")
+
+        disp = sub.copy()
+        disp["가격"] = disp["가격"].apply(lambda v: f"{int(v):,}원")
+        disp["EA가격"] = disp.apply(
+            lambda r: f"{int(r['EA가격']):,}원 ⭐" if r["EA가격"] == min_ea else f"{int(r['EA가격']):,}원", axis=1
+        )
+
+        # 선택 행 반전 스타일 + 최초 로딩 시 ⭐ 자동 선택
+        highlight_selected = JsCode("""
+        function(params){
+            if (params.node.isSelected()){
+                const isDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+                if (isDark)  { return {'color':'white','backgroundColor':'black','fontWeight':'bold'}; }
+                else         { return {'color':'black','backgroundColor':'white','fontWeight':'bold'}; }
             }
+        }""")
 
-            # 브랜드 선택 드롭다운
-            selected_product = st.selectbox(
-                "📌 브랜드 선택",
-                options=list(product_options.keys()),
-                format_func=lambda x: product_options[x]
-            )
+        auto_select_min = JsCode("""
+        function(e){
+            const api = e.api;
+            let done = false;
+            api.forEachNode((node) => {
+                const val = node.data && node.data["EA가격"];
+                if (!done && typeof val === "string" && val.indexOf("⭐") !== -1){
+                    node.setSelected(true);
+                    api.ensureIndexVisible(node.rowIndex);
+                    done = true;
+                }
+            });
+        }""")
 
-            if selected_product:
-                sub_df = filtered[filtered["표준상품"] == selected_product].reset_index(drop=True)
-                min_price = sub_df["EA가격"].min()
+        gb = GridOptionsBuilder.from_dataframe(disp[["판매처", "단위", "가격", "EA가격", "갱신일"]])
+        gb.configure_selection("single", use_checkbox=False)
+        gb.configure_grid_options(getRowStyle=highlight_selected, onGridReady=auto_select_min)
+        grid_options = gb.build()
 
-                st.subheader(f"🔍 {selected_product} 판매처별 가격")
+        grid_resp = AgGrid(
+            disp[["판매처", "단위", "가격", "EA가격", "갱신일"]],
+            gridOptions=grid_options,
+            enable_enterprise_modules=False,
+            theme="streamlit",
+            fit_columns_on_grid_load=True,
+            update_mode="MODEL_CHANGED",
+            allow_unsafe_jscode=True,
+            height=300
+        )
 
-                # 테이블 표시 (EA가격 최저가에 ⭐ 표시)
-                sub_df_display = sub_df.copy()
-                sub_df_display["가격"] = sub_df_display["가격"].apply(lambda x: f"{int(x):,}원")
-                sub_df_display["EA가격"] = sub_df_display.apply(
-                    lambda r: f"{int(r['EA가격']):,}원 ⭐" if r["EA가격"] == min_price else f"{int(r['EA가격']):,}원",
-                    axis=1
-                )
+        # 선택 행 → 상세
+        sel_rows = grid_resp.get("selected_rows")
+        if isinstance(sel_rows, list) and len(sel_rows) > 0:
+            sel = sel_rows[0]
+        else:
+            sel = disp.loc[disp["EA가격"].str.contains("⭐")].iloc[0].to_dict()
 
-                st.dataframe(sub_df_display[["판매처", "단위", "가격", "EA가격", "갱신일"]], use_container_width=True)
+        base_row = sub[sub["판매처"] == sel["판매처"]].iloc[0]
+        diff_val = float(base_row["EA가격"]) - float(base_row["이전EA가격"])
+        if diff_val < 0:
+            diff_txt = f"⬇️ {int(abs(diff_val)):,}원 하락"
+        elif diff_val > 0:
+            diff_txt = f"⬆️ {int(diff_val):,}원 상승"
+        else:
+            diff_txt = "변동 없음"
 
-                # 최저가 판매처를 기본 선택
-                default_index = int(sub_df[sub_df["EA가격"] == min_price].index[0])
-                selected_index = st.selectbox(
-                    "📌 판매처 선택",
-                    [int(i) for i in sub_df.index],
-                    format_func=lambda x: f"{sub_df.loc[x, '판매처']} | {int(sub_df.loc[x, '가격']):,}원 | EA:{int(sub_df.loc[x, 'EA가격']):,}원",
-                    index=[int(i) for i in sub_df.index].index(default_index)
-                )
-
-                # 상세 정보
-                row = sub_df.loc[selected_index]
-                st.subheader("📋 상세 정보 (선택된 판매처)")
-
-                diff_val = float(row["EA가격"]) - float(row["이전EA가격"])
-                if diff_val < 0:
-                    diff_text = f"⬇️ {int(abs(diff_val)):,}원 하락"
-                elif diff_val > 0:
-                    diff_text = f"⬆️ {int(diff_val):,}원 상승"
-                else:
-                    diff_text = "변동 없음"
-
-                detail_table = pd.DataFrame({
-                    "항목": [
-                        "브랜드", "상품명", "규격", "판매처", "판매단위",
-                        "원시가격", "EA 환산가격(현재)", "이전 EA가격", "가격 변동", "갱신일", "URL"
-                    ],
-                    "값": [
-                        str(row["브랜드"]),
-                        str(row["품명"]),
-                        str(row["규격"]),
-                        str(row["판매처"]),
-                        str(row["단위"]),
-                        f"{int(row['가격']):,}원",
-                        f"{int(row['EA가격']):,}원" + (" ⭐" if row["EA가격"] == min_price else ""),
-                        f"{int(row['이전EA가격']):,}원",
-                        diff_text,
-                        str(row["갱신일"]),
-                        str(row["url"])
-                    ]
-                })
-
-                st.table(detail_table)
-
-                # 최저가 안내
-                if row["EA가격"] == min_price:
-                    st.success(f"⭐ 이 상품은 현재 최저가 ({int(min_price):,}원)")
-                else:
-                    st.info(f"이 상품의 최저가는 {int(min_price):,}원 입니다.")
+        detail = pd.DataFrame({
+            "항목": ["브랜드","상품명","규격","판매처","판매단위","원시가격","EA 환산가격(현재)","이전 EA가격","가격 변동","갱신일","URL"],
+            "값": [
+                str(base_row["브랜드"]),
+                str(base_row["품명"]),
+                str(base_row["규격"]),
+                str(base_row["판매처"]),
+                str(base_row["단위"]),
+                f"{int(base_row['가격']):,}원",
+                f"{int(base_row['EA가격']):,}원" + (" ⭐" if base_row["EA가격"] == min_ea else ""),
+                f"{int(base_row['이전EA가격']):,}원",
+                diff_txt,
+                str(base_row["갱신일"]),
+                str(base_row["url"])
+            ]
+        })
+        st.table(detail)
