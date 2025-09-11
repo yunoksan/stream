@@ -21,7 +21,6 @@ def convert_to_ea(row):
     unit = str(row.get("단위", ""))
     price = float(row.get("가격", 0))
     if "Box" in unit:
-        # 예: "Box(10EA)" → 10
         try:
             count_str = unit.split("(")[1].split("EA")[0].replace(")", "")
             count = int(count_str)
@@ -57,10 +56,9 @@ with st.sidebar:
 
     # 1) 상품
     all_products = sorted(df["품명"].dropna().unique()) if not df.empty else []
-    sel_product_key = "sel_product"  # 상품은 고정 key
-    selected_product = st.selectbox("상품명", [""] + list(all_products), key=sel_product_key)
+    selected_product = st.selectbox("상품명", [""] + list(all_products), key="sel_product")
 
-    # 2) 브랜드 (상품 선택에 종속) → 상품이 바뀌면 key가 달라져 새 위젯 생성됨
+    # 2) 브랜드 (상품 선택에 종속)
     if selected_product:
         brand_options = sorted(df[df["품명"] == selected_product]["브랜드"].dropna().unique())
     else:
@@ -68,21 +66,24 @@ with st.sidebar:
     brand_widget_key = f"sel_brand__{selected_product or 'ALL'}"
     selected_brand = st.selectbox("브랜드", [""] + list(brand_options), key=brand_widget_key)
 
-    # 3) 규격 (상품/브랜드에 종속) → 둘 중 하나라도 바뀌면 key가 달라져 새 위젯 생성됨
+    # 3) 규격 (상품/브랜드 종속, 작은 단위 → 큰 단위 정렬)
     size_options = []
     if selected_product and selected_brand:
-        size_options = sorted(df[(df["품명"] == selected_product) & (df["브랜드"] == selected_brand)]["규격"].dropna().unique())
+        size_options = df[(df["품명"] == selected_product) & (df["브랜드"] == selected_brand)]["규격"].dropna().unique()
     elif selected_product:
-        size_options = sorted(df[df["품명"] == selected_product]["규격"].dropna().unique())
+        size_options = df[df["품명"] == selected_product]["규격"].dropna().unique()
     elif selected_brand:
-        size_options = sorted(df[df["브랜드"] == selected_brand]["규격"].dropna().unique())
+        size_options = df[df["브랜드"] == selected_brand]["규격"].dropna().unique()
+
+    size_options = sorted(size_options, key=size_to_base)
+
     size_widget_key = f"sel_size__{selected_product or 'ALL'}__{selected_brand or 'ALL'}"
-    if size_options:
+    if len(size_options) > 0:
         selected_size = st.selectbox("규격", [""] + list(size_options), key=size_widget_key)
     else:
         selected_size = ""
 
-    # 선택 검색어를 우측 키워드창으로만 “전달” (검색은 우측에서만)
+    # 선택 검색어를 우측 키워드창으로 전달
     if st.button("➡️ 선택 검색어를 키워드창으로 보내기"):
         terms = []
         if selected_product: terms.append(selected_product)
@@ -92,7 +93,6 @@ with st.sidebar:
         if keyword_str.strip():
             st.session_state["keyword"] = keyword_str
             st.success(f"키워드창에 '{keyword_str}' 입력됨")
-            # 바로 반영되도록 즉시 리런 (버전별 호환)
             try:
                 st.rerun()
             except Exception:
@@ -106,7 +106,6 @@ keyword = st.text_input("🔍 키워드 검색 (예: 참깨, 또는 '참 5k')",
                         key="keyword_input")
 
 if keyword and not df.empty:
-    # 공백 분리 AND 검색
     kws = keyword.split()
     filtered = df.copy()
     for kw in kws:
