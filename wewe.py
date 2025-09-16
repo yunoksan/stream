@@ -2,7 +2,7 @@ import streamlit as st
 import requests
 import base64
 
-API_KEY = "YOUR_GOOGLE_CLOUD_API_KEY"
+API_KEY = "AIzaSyDeTvD5tWP0BTdZ14TjqS8gaseeJAqPvfQ"
 url = f"https://vision.googleapis.com/v1/images:annotate?key={API_KEY}"
 
 st.title("📷 바코드 스캐너 (Google Vision API)")
