@@ -5,6 +5,5 @@ streamlit_autorefresh
 streamlit-aggrid
 pyzbar
 pillow
-opencv-python
 numpy
 pillow
