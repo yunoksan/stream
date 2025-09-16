@@ -1,6 +1,5 @@
 streamlit-aggrid
 pyzbar
 pillow
-opencv-python
 numpy
 pillow
