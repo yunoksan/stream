@@ -3,3 +3,5 @@ pandas
 numpy
 streamlit_autorefresh
 streamlit-aggrid
+pyzbar
+pillow
